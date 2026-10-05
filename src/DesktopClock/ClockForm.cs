@@ -122,8 +122,32 @@ public sealed class ClockForm : Form
     protected override void WndProc(ref Message m)
     {
         const int WM_ERASEBKGND = 0x0014;
+        const int WM_SIZE = 0x0005;
+        const int SIZE_MINIMIZED = 1;
+
         if (m.Msg == WM_ERASEBKGND) { m.Result = (IntPtr)1; return; }
+
+        // "显示桌面"(Win+D / 右下角按钮) 会最小化所有顶层窗口。
+        // 我们立刻把自己恢复回来，让时钟在桌面上始终可见。
+        if (m.Msg == WM_SIZE && m.WParam.ToInt64() == SIZE_MINIMIZED)
+        {
+            try { BeginInvoke(new Action(RestoreFromShowDesktop)); } catch { }
+        }
+
         base.WndProc(ref m);
+    }
+
+    private void RestoreFromShowDesktop()
+    {
+        if (!IsHandleCreated || _hidden) return;
+        try
+        {
+            Native.ShowWindow(Handle, Native.SW_RESTORE);
+            SendToBottom();
+            RenderNow();
+            Log.Info("restored after 'show desktop'");
+        }
+        catch (Exception ex) { Log.Error("RestoreFromShowDesktop failed", ex); }
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -301,6 +325,9 @@ public sealed class ClockForm : Form
                 _lastRotate = now;
                 RotatePoem(true);
             }
+
+            // 万一被"显示桌面"最小化（漏掉 WM_SIZE 时兜底），也自动恢复
+            if (Native.IsIconic(Handle)) RestoreFromShowDesktop();
 
             RenderNow(); // 持续重绘：保证被遮挡恢复后内容仍在
         }
