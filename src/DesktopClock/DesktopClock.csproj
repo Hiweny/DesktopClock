@@ -10,8 +10,9 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>DesktopClock</AssemblyName>
     <RootNamespace>DesktopClock</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <DebugType>none</DebugType>
     <InvariantGlobalization>false</InvariantGlobalization>
