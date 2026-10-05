@@ -6,18 +6,18 @@ using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace DesktopClock;
 
 /// <summary>
 /// 桌面透明时钟。
-/// 实现要点：
-///  - 无边框 + 逐像素 Alpha 分层窗口（UpdateLayeredWindow），只有文字、没有背板；
-///  - WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW：不抢焦点、不进任务栏、不出现在 Alt+Tab；
-///  - 始终保持在所有窗口的最底层（HWND_BOTTOM），因此位于桌面上、不会遮挡其它程序；
-///  - 按住文字可拖动，右键弹出菜单；
-///  - 透明像素处鼠标自动穿透，不影响点击桌面图标。
+///  - 逐像素 Alpha 分层窗口，只有文字、没有背板；
+///  - 始终沉在最底层，位于桌面上、不遮挡其它程序；
+///  - 被其它窗口遮挡后回到桌面时自动重绘，不会"消失"；
+///  - 系统托盘图标常驻，可随时显示/隐藏、换诗、退出；
+///  - 诗词按设定间隔轮换，切换带淡入淡出。
 /// </summary>
 public sealed class ClockForm : Form
 {
@@ -34,15 +34,23 @@ public sealed class ClockForm : Form
     private const float YPoem = 250f, HPoem = 52f;
     private const float YAttr = 308f, HAttr = 40f;
 
+    private const double FadeStep = 0.08;
+
     private readonly float _scale;
     private int _w, _h;
 
     private readonly PoemService _poemService = new();
     private Poem _current = Poem.Offline(DateTime.Now);
+    private Poem? _pending;
+    private double _alpha = 1.0;
+    private double _targetAlpha = 1.0;
 
-    private readonly System.Windows.Forms.Timer _tick = new();
+    private readonly System.Windows.Forms.Timer _tick = new();  // 1 秒：时钟 + 持续重绘
+    private readonly System.Windows.Forms.Timer _anim = new();  // 33 毫秒：淡入淡出
+
     private int _lastMinute = -1;
-    private DateTime _lastPoemFetch = DateTime.MinValue;
+    private DateTime _lastRotate = DateTime.MinValue;
+    private int _rotateSeconds = 60;
 
     private Font _timeFont = null!, _dateFont = null!, _poemFont = null!, _attrFont = null!;
     private static readonly CultureInfo Zh = new("zh-CN");
@@ -50,9 +58,13 @@ public sealed class ClockForm : Form
     private bool _dragging;
     private Point _dragStartCursor;
     private Point _dragStartWindow;
+    private bool _hidden;
 
-    private readonly ContextMenuStrip _menu;
-    private readonly ToolStripMenuItem _autoItem;
+    private NotifyIcon _tray = null!;
+    private ContextMenuStrip _menu = null!;
+    private readonly List<ToolStripMenuItem> _autoItems = new();
+    private readonly List<ToolStripMenuItem> _intervalItems = new();
+    private readonly List<ToolStripMenuItem> _toggleItems = new();
 
     public ClockForm(float scale)
     {
@@ -74,17 +86,20 @@ public sealed class ClockForm : Form
 
         BuildFonts();
 
-        _menu = new ContextMenuStrip { ShowImageMargin = false };
-        _menu.Items.Add(new ToolStripMenuItem("换一句诗词", null, (_, _) => RefreshPoem()));
-        _menu.Items.Add(new ToolStripMenuItem("回到屏幕中央", null, (_, _) => { Recenter(); RenderNow(); }));
-        _autoItem = new ToolStripMenuItem("开机自启动") { CheckOnClick = true, Checked = Autostart.IsEnabled() };
-        _autoItem.Click += (_, _) => Autostart.SetEnabled(_autoItem.Checked);
-        _menu.Items.Add(_autoItem);
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(new ToolStripMenuItem("退出", null, (_, _) => Application.Exit()));
+        _menu = BuildMenu();
+        _tray = new NotifyIcon
+        {
+            Icon = LoadAppIcon(),
+            Text = "DesktopClock · 桌面时钟",
+            Visible = true,
+            ContextMenuStrip = BuildMenu()
+        };
+        _tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ToggleClock(); };
 
         _tick.Interval = 1000;
         _tick.Tick += OnTick;
+        _anim.Interval = 33;
+        _anim.Tick += OnAnim;
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -99,9 +114,10 @@ public sealed class ClockForm : Form
         }
     }
 
-    // 绘制完全交给 UpdateLayeredWindow，屏蔽系统擦除/重绘
     protected override void OnPaintBackground(PaintEventArgs e) { }
-    protected override void OnPaint(PaintEventArgs e) { }
+
+    // 被遮挡后恢复显示时系统会发 WM_PAINT —— 在这里重新提交内容，时钟就不会"消失"
+    protected override void OnPaint(PaintEventArgs e) => RenderNow();
 
     protected override void WndProc(ref Message m)
     {
@@ -116,85 +132,254 @@ public sealed class ClockForm : Form
 
         try
         {
-            Log.Info("#1 screen bounds = " + Screen.PrimaryScreen?.Bounds);
+            Log.Info("#1 screen = " + Screen.PrimaryScreen?.Bounds);
             RenderNow();
-            Log.Info("#2 first render done");
-
-            // 沉到所有窗口的最底层，且不抢焦点
             bool ok = Native.SetWindowPos(Handle, Native.HWND_BOTTOM, 0, 0, 0, 0,
                 Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
-            Log.Info("#3 SetWindowPos(BOTTOM) = " + ok + ", err=" + Marshal.GetLastWin32Error());
-
+            Log.Info("#2 SetWindowPos(BOTTOM) = " + ok + ", err=" + Marshal.GetLastWin32Error());
             if (Native.GetWindowRect(Handle, out var r))
-                Log.Info("#4 rect = " + r.Left + "," + r.Top + "  " + (r.Right - r.Left) + "x" + (r.Bottom - r.Top));
+                Log.Info("#3 rect = " + r.Left + "," + r.Top + " " + (r.Right - r.Left) + "x" + (r.Bottom - r.Top));
         }
-        catch (Exception ex)
-        {
-            Log.Error("OnHandleCreated failed", ex);
-        }
+        catch (Exception ex) { Log.Error("OnHandleCreated failed", ex); }
 
         try
         {
-            if (!_autoItem.Checked && !Autostart.IsEnabled())
+            if (!Autostart.IsEnabled())
             {
                 Autostart.SetEnabled(true);
-                _autoItem.Checked = true;
+                SyncAuto();
                 Log.Info("autostart enabled");
             }
         }
         catch (Exception ex) { Log.Error("autostart failed", ex); }
 
+        _lastRotate = DateTime.Now;
         _tick.Start();
-        _lastPoemFetch = DateTime.Now;
-        RefreshPoem();
+        InitialLoadAsync();
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _tick.Stop();
-        _tick.Dispose();
+        _anim.Stop();
+        try { _tray.Visible = false; _tray.Dispose(); } catch { }
         base.OnFormClosed(e);
     }
 
     private Point CenterIn(Rectangle screen)
-    {
-        int x = screen.X + Math.Max(0, (screen.Width - _w) / 2);
-        int y = screen.Y + Math.Max(0, (screen.Height - _h) / 2);
-        return new Point(x, y);
-    }
+        => new(screen.X + Math.Max(0, (screen.Width - _w) / 2),
+               screen.Y + Math.Max(0, (screen.Height - _h) / 2));
 
     private void Recenter()
     {
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
         Location = CenterIn(screen);
-        Native.SetWindowPos(Handle, Native.HWND_BOTTOM, 0, 0, 0, 0,
-            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        SendToBottom();
+    }
+
+    private void SendToBottom()
+    {
+        try
+        {
+            Native.SetWindowPos(Handle, Native.HWND_BOTTOM, 0, 0, 0, 0,
+                Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        }
+        catch { }
     }
 
     // ------------------------------------------------------------------
-    // 定时刷新
+    // 菜单 / 托盘
+    // ------------------------------------------------------------------
+    private ContextMenuStrip BuildMenu()
+    {
+        var m = new ContextMenuStrip { ShowImageMargin = false };
+
+        var toggle = new ToolStripMenuItem(_hidden ? "显示时钟" : "隐藏时钟", null, (_, _) => ToggleClock());
+        _toggleItems.Add(toggle);
+        m.Items.Add(toggle);
+
+        m.Items.Add(new ToolStripMenuItem("换一句诗词", null, (_, _) => RotatePoem(true)));
+        m.Items.Add(new ToolStripMenuItem("回到屏幕中央", null, (_, _) => { Recenter(); RenderNow(); }));
+
+        var interval = new ToolStripMenuItem("诗词轮换间隔");
+        foreach (var pair in new[] { ("30 秒", 30), ("1 分钟", 60), ("5 分钟", 300), ("10 分钟", 600) })
+        {
+            var it = new ToolStripMenuItem(pair.Item1) { Checked = _rotateSeconds == pair.Item2, Tag = pair.Item2 };
+            it.Click += (s, _) =>
+            {
+                if (s is ToolStripMenuItem mi && mi.Tag is int secs)
+                {
+                    _rotateSeconds = secs;
+                    _lastRotate = DateTime.Now;
+                    SyncIntervals();
+                }
+            };
+            _intervalItems.Add(it);
+            interval.DropDownItems.Add(it);
+        }
+        m.Items.Add(interval);
+
+        var auto = new ToolStripMenuItem("开机自启动") { CheckOnClick = true, Checked = Autostart.IsEnabled() };
+        auto.Click += (_, _) => { Autostart.SetEnabled(auto.Checked); SyncAuto(); };
+        _autoItems.Add(auto);
+        m.Items.Add(auto);
+
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(new ToolStripMenuItem("退出", null, (_, _) => ExitApp()));
+        return m;
+    }
+
+    private void SyncAuto()
+    {
+        bool v = Autostart.IsEnabled();
+        foreach (var it in _autoItems) it.Checked = v;
+    }
+
+    private void SyncIntervals()
+    {
+        foreach (var it in _intervalItems)
+            if (it.Tag is int s) it.Checked = (s == _rotateSeconds);
+    }
+
+    private void SyncToggleText()
+    {
+        string t = _hidden ? "显示时钟" : "隐藏时钟";
+        foreach (var it in _toggleItems) it.Text = t;
+    }
+
+    private void ToggleClock()
+    {
+        _hidden = !_hidden;
+        Visible = !_hidden;
+        if (!_hidden)
+        {
+            SendToBottom();
+            RenderNow();
+        }
+        SyncToggleText();
+    }
+
+    private void ExitApp()
+    {
+        try { _tray.Visible = false; _tray.Dispose(); } catch { }
+        Application.Exit();
+    }
+
+    private static Icon LoadAppIcon()
+    {
+        try
+        {
+            string? p = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(p))
+            {
+                var ic = Icon.ExtractAssociatedIcon(p);
+                if (ic != null) return ic;
+            }
+        }
+        catch { }
+        try
+        {
+            var ic = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (ic != null) return ic;
+        }
+        catch { }
+        return SystemIcons.Application;
+    }
+
+    // ------------------------------------------------------------------
+    // 定时：时钟秒针 + 轮换 + 持续重绘
     // ------------------------------------------------------------------
     private void OnTick(object? sender, EventArgs e)
     {
         try
         {
             var now = DateTime.Now;
-            if (now.Minute != _lastMinute)
+            if (now.Minute != _lastMinute) _lastMinute = now.Minute;
+
+            if ((now - _lastRotate).TotalSeconds >= _rotateSeconds)
             {
-                _lastMinute = now.Minute;
-                RenderNow();
+                _lastRotate = now;
+                RotatePoem(true);
             }
-            if ((now - _lastPoemFetch).TotalMinutes >= 10)
-            {
-                _lastPoemFetch = now;
-                RefreshPoem();
-            }
+
+            RenderNow(); // 持续重绘：保证被遮挡恢复后内容仍在
         }
         catch (Exception ex) { Log.Error("OnTick failed", ex); }
     }
 
+    private void OnAnim(object? sender, EventArgs e)
+    {
+        try
+        {
+            if (_targetAlpha < _alpha)
+            {
+                _alpha -= FadeStep;
+                if (_alpha <= 0)
+                {
+                    _alpha = 0;
+                    if (_pending != null) { _current = _pending; _pending = null; _targetAlpha = 1; }
+                }
+            }
+            else if (_targetAlpha > _alpha)
+            {
+                _alpha += FadeStep;
+            }
+
+            if (Math.Abs(_alpha - _targetAlpha) < 0.001)
+            {
+                _alpha = _targetAlpha;
+                _anim.Stop();
+            }
+
+            RenderNow();
+        }
+        catch (Exception ex) { Log.Error("OnAnim failed", ex); }
+    }
+
     // ------------------------------------------------------------------
-    // 绘制 & 提交
+    // 诗词
+    // ------------------------------------------------------------------
+    private async void InitialLoadAsync()
+    {
+        try { _current = await _poemService.FetchAsync(); }
+        catch { }
+        _alpha = 1;
+        _targetAlpha = 1;
+        Log.Info("poem(initial): " + _current.Text + "  [" + _current.Attribution + "] offline=" + _current.IsOffline);
+        RenderNow();
+    }
+
+    private void RotatePoem(bool animate)
+    {
+        _ = LoadThenFadeAsync(animate);
+    }
+
+    private async Task LoadThenFadeAsync(bool animate)
+    {
+        Poem next;
+        try { next = await _poemService.FetchAsync(); }
+        catch { next = Poem.Offline(DateTime.Now); }
+
+        _pending = next;
+        Log.Info("poem(next): " + next.Text + "  [" + next.Attribution + "] offline=" + next.IsOffline);
+
+        if (animate)
+        {
+            _targetAlpha = 0;
+            if (!_anim.Enabled) _anim.Start();
+        }
+        else
+        {
+            _current = next;
+            _pending = null;
+            _alpha = 1;
+            _targetAlpha = 1;
+            RenderNow();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 绘制
     // ------------------------------------------------------------------
     private void RenderNow()
     {
@@ -215,11 +400,17 @@ public sealed class ClockForm : Form
                 string poem = _current.Text ?? string.Empty;
                 string attr = _current.Attribution ?? string.Empty;
 
+                double a = Math.Max(0, Math.Min(1, _alpha));
+                int poemA = (int)Math.Round(238 * a);
+                int attrA = (int)Math.Round(190 * a);
+
                 DrawCentered(g, time, _timeFont, Brushes.White, YTime * _scale, HTime * _scale);
                 DrawCentered(g, date, _dateFont, new SolidBrush(Color.FromArgb(238, 255, 255, 255)), YDate * _scale, HDate * _scale);
-                DrawCentered(g, poem, _poemFont, new SolidBrush(Color.FromArgb(238, 255, 255, 255)), YPoem * _scale, HPoem * _scale);
-                if (!string.IsNullOrEmpty(attr))
-                    DrawCentered(g, attr, _attrFont, new SolidBrush(Color.FromArgb(190, 255, 255, 255)), YAttr * _scale, HAttr * _scale);
+
+                if (poemA > 0 && !string.IsNullOrEmpty(poem))
+                    DrawCentered(g, poem, _poemFont, new SolidBrush(Color.FromArgb(poemA, 255, 255, 255)), YPoem * _scale, HPoem * _scale);
+                if (attrA > 0 && !string.IsNullOrEmpty(attr))
+                    DrawCentered(g, attr, _attrFont, new SolidBrush(Color.FromArgb(attrA, 255, 255, 255)), YAttr * _scale, HAttr * _scale);
             }
 
             Blit(bmp);
@@ -264,7 +455,6 @@ public sealed class ClockForm : Form
         IntPtr hBitmap = Native.CreateDIBSection(memDc, ref bmi, 0, out IntPtr bits, IntPtr.Zero, 0);
         if (hBitmap == IntPtr.Zero)
         {
-            Log.Error("CreateDIBSection failed, err=" + Marshal.GetLastWin32Error());
             Native.DeleteDC(memDc);
             Native.ReleaseDC(IntPtr.Zero, screenDc);
             return;
@@ -284,11 +474,11 @@ public sealed class ClockForm : Form
                 for (int x = 0; x < w; x++)
                 {
                     int i = x * 4;
-                    byte b = srow[i + 0], gg = srow[i + 1], r = srow[i + 2], a = srow[i + 3];
-                    drow[i + 0] = (byte)(b * a / 255);
-                    drow[i + 1] = (byte)(gg * a / 255);
-                    drow[i + 2] = (byte)(r * a / 255);
-                    drow[i + 3] = a;
+                    byte b = srow[i + 0], gg = srow[i + 1], r = srow[i + 2], al = srow[i + 3];
+                    drow[i + 0] = (byte)(b * al / 255);
+                    drow[i + 1] = (byte)(gg * al / 255);
+                    drow[i + 2] = (byte)(r * al / 255);
+                    drow[i + 3] = al;
                 }
             }
         }
@@ -307,30 +497,12 @@ public sealed class ClockForm : Form
             AlphaFormat = Native.AC_SRC_ALPHA
         };
 
-        bool ok = Native.UpdateLayeredWindow(Handle, screenDc, IntPtr.Zero, ref size, memDc, ref srcPt, 0, ref blend, Native.ULW_ALPHA);
-        if (!ok) Log.Error("UpdateLayeredWindow failed, err=" + Marshal.GetLastWin32Error());
+        Native.UpdateLayeredWindow(Handle, screenDc, IntPtr.Zero, ref size, memDc, ref srcPt, 0, ref blend, Native.ULW_ALPHA);
 
         Native.SelectObject(memDc, old);
         Native.DeleteObject(hBitmap);
         Native.DeleteDC(memDc);
         Native.ReleaseDC(IntPtr.Zero, screenDc);
-    }
-
-    private async void RefreshPoem()
-    {
-        try
-        {
-            var p = await _poemService.FetchAsync();
-            _current = p;
-            Log.Info("poem: " + p.Text + "  [" + p.Attribution + "] offline=" + p.IsOffline);
-            if (IsDisposed || !IsHandleCreated) return;
-            if (InvokeRequired) BeginInvoke(new Action(RenderNow));
-            else RenderNow();
-        }
-        catch (Exception ex)
-        {
-            Log.Error("RefreshPoem failed", ex);
-        }
     }
 
     // ------------------------------------------------------------------
@@ -359,10 +531,7 @@ public sealed class ClockForm : Form
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Right)
-        {
-            _menu.Show(Cursor.Position);
-        }
+        if (e.Button == MouseButtons.Right) _menu.Show(Cursor.Position);
         _dragging = false;
     }
 
@@ -389,9 +558,7 @@ public sealed class ClockForm : Form
             var available = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var f in col.Families) available.Add(f.Name);
             foreach (var c in candidates)
-            {
                 if (available.Contains(c)) return c;
-            }
         }
         catch { }
         return FontFamily.GenericSerif.Name;
