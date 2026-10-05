@@ -72,6 +72,18 @@ internal static class Native
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct WINDOWPOS
+    {
+        public IntPtr hwnd;
+        public IntPtr hwndInsertAfter;
+        public int x;
+        public int y;
+        public int cx;
+        public int cy;
+        public uint flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {
         public int Left, Top, Right, Bottom;
