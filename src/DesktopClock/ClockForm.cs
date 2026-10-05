@@ -156,6 +156,7 @@ public sealed class ClockForm : Form
 
         try
         {
+            Log.Info("#0 hwnd = " + Handle.ToInt64());
             Log.Info("#1 screen = " + Screen.PrimaryScreen?.Bounds);
             RenderNow();
             bool ok = Native.SetWindowPos(Handle, Native.HWND_BOTTOM, 0, 0, 0, 0,
