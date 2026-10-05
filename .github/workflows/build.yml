@@ -43,29 +43,38 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path out/folder/* -DestinationPath out/DesktopClock-folder.zip -Force
 
-      - name: List outputs
-        shell: pwsh
-        run: |
-          Get-ChildItem out -Recurse -File | Select-Object FullName,@{n='MB';e={[math]::Round($_.Length/1MB,1)}}
-
-      - name: Smoke test (really launch the exe)
+      - name: Smoke test (launch + autostart registry)
         shell: pwsh
         run: |
           $log = Join-Path $env:LOCALAPPDATA "DesktopClock\DesktopClock.log"
           if (Test-Path $log) { Remove-Item $log -Force }
+
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          Remove-ItemProperty -Path $runKey -Name DesktopClock -ErrorAction SilentlyContinue
+
           $exe = (Resolve-Path "out/single/DesktopClock.exe").Path
           Write-Host "launch: $exe"
           $p = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 15
+          Start-Sleep -Seconds 12
+
           if ($p.HasExited) {
             Write-Host "::error::EXITED early, code=$($p.ExitCode)"
-            if (Test-Path $log) { Write-Host "---- LOG ----"; Get-Content $log }
+            if (Test-Path $log) { Get-Content $log }
             exit 1
           }
-          Write-Host "OK: process is alive, pid=$($p.Id)"
-          if (Test-Path $log) { Write-Host "---- LOG ----"; Get-Content $log } else { Write-Host "(no log file)" }
+          Write-Host "OK: process alive, pid=$($p.Id)"
+
+          $val = (Get-ItemProperty -Path $runKey -Name DesktopClock -ErrorAction SilentlyContinue).DesktopClock
+          Write-Host "Run registry entry = $val"
+          Write-Host "---- LOG ----"
+          if (Test-Path $log) { Get-Content $log }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          Write-Host "smoke test passed"
+
+          $fail = $false
+          if (-not $val) { Write-Host "::error::autostart registry entry was NOT written"; $fail = $true }
+          elseif ($val -notlike "*DesktopClock.exe*") { Write-Host "::error::autostart entry points to wrong path: $val"; $fail = $true }
+          if ($fail) { exit 1 }
+          Write-Host "smoke test passed (autostart registered)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
