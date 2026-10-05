@@ -3,9 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace DesktopClock;
 
-/// <summary>
-/// Win32 互操作声明。
-/// </summary>
+/// <summary>Win32 互操作声明。</summary>
 internal static class Native
 {
     // 扩展窗口样式
@@ -13,12 +11,11 @@ internal static class Native
     public const int WS_EX_TOOLWINDOW = 0x00000080;
     public const int WS_EX_NOACTIVATE = 0x08000000;
 
-    // SetWindowPos 标志
+    // SetWindowPos
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
-    public const uint SWP_SHOWWINDOW = 0x0040;
 
     public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
 
@@ -27,42 +24,13 @@ internal static class Native
     public const int AC_SRC_ALPHA = 1;
     public const int ULW_ALPHA = 2;
 
-    // "生成 WorkerW" 消息
-    public const uint WM_SPAWN_WORKER = 0x052C;
-
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new IntPtr(-4);
-
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr FindWindowEx(IntPtr hWndParent, IntPtr hWndChildAfter, string? lpszClass, string? lpszWindow);
-
-    [DllImport("user32.dll")]
-    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, IntPtr pptDst, ref SIZE psize,
@@ -144,6 +112,6 @@ internal static class Native
     public struct BITMAPINFO
     {
         public BITMAPINFOHEADER bmiHeader;
-        public uint bmiColors; // BI_RGB 下无需调色板，仅作占位
+        public uint bmiColors;
     }
 }
