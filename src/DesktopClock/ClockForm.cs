@@ -59,8 +59,6 @@ public sealed class ClockForm : Form
     private Point _dragStartCursor;
     private Point _dragStartWindow;
     private bool _hidden;
-    private bool _allowZReorder;
-    private bool _zGuardActive;
 
     private NotifyIcon _tray = null!;
     private ContextMenuStrip _menu = null!;
@@ -124,47 +122,8 @@ public sealed class ClockForm : Form
     protected override void WndProc(ref Message m)
     {
         const int WM_ERASEBKGND = 0x0014;
-        const int WM_SIZE = 0x0005;
-        const int SIZE_MINIMIZED = 1;
-
-        const int WM_WINDOWPOSCHANGING = 0x0046;
-
         if (m.Msg == WM_ERASEBKGND) { m.Result = (IntPtr)1; return; }
-
-        // Z 序锁：禁止任何外部操作（包括"显示桌面"对窗口的恢复）把时钟提到最上层。
-        // 只拦截 Z 序改变，位置/尺寸/最小化-恢复仍照常。
-        if (m.Msg == WM_WINDOWPOSCHANGING && _zGuardActive && !_allowZReorder)
-        {
-            try
-            {
-                var wp = Marshal.PtrToStructure<Native.WINDOWPOS>(m.LParam);
-                wp.flags |= Native.SWP_NOZORDER;
-                Marshal.StructureToPtr(wp, m.LParam, false);
-            }
-            catch { }
-        }
-
-        // "显示桌面"(Win+D / 右下角按钮) 会最小化所有顶层窗口。
-        // 我们立刻把自己恢复回来，让时钟在桌面上始终可见。
-        if (m.Msg == WM_SIZE && m.WParam.ToInt64() == SIZE_MINIMIZED)
-        {
-            try { BeginInvoke(new Action(RestoreFromShowDesktop)); } catch { }
-        }
-
         base.WndProc(ref m);
-    }
-
-    private void RestoreFromShowDesktop()
-    {
-        if (!IsHandleCreated || _hidden) return;
-        try
-        {
-            Native.ShowWindow(Handle, Native.SW_RESTORE);
-            SendToBottom();
-            RenderNow();
-            Log.Info("restored after 'show desktop'");
-        }
-        catch (Exception ex) { Log.Error("RestoreFromShowDesktop failed", ex); }
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -173,7 +132,6 @@ public sealed class ClockForm : Form
 
         try
         {
-            Log.Info("#0 hwnd = " + Handle.ToInt64());
             Log.Info("#1 screen = " + Screen.PrimaryScreen?.Bounds);
             RenderNow();
             bool ok = Native.SetWindowPos(Handle, Native.HWND_BOTTOM, 0, 0, 0, 0,
@@ -195,7 +153,6 @@ public sealed class ClockForm : Form
         }
         catch (Exception ex) { Log.Error("autostart failed", ex); }
 
-        _zGuardActive = true; // 初始化完成后启用 Z 序锁
         _lastRotate = DateTime.Now;
         _tick.Start();
         InitialLoadAsync();
@@ -224,12 +181,10 @@ public sealed class ClockForm : Form
     {
         try
         {
-            _allowZReorder = true;
             Native.SetWindowPos(Handle, Native.HWND_BOTTOM, 0, 0, 0, 0,
                 Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
         catch { }
-        finally { _allowZReorder = false; }
     }
 
     // ------------------------------------------------------------------
@@ -346,9 +301,6 @@ public sealed class ClockForm : Form
                 _lastRotate = now;
                 RotatePoem(true);
             }
-
-            // 万一被"显示桌面"最小化（漏掉 WM_SIZE 时兜底），也自动恢复
-            if (Native.IsIconic(Handle)) RestoreFromShowDesktop();
 
             RenderNow(); // 持续重绘：保证被遮挡恢复后内容仍在
         }

@@ -32,14 +32,6 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    public static extern bool IsIconic(IntPtr hWnd);
-
-    public const int SW_RESTORE = 9;
-
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, IntPtr pptDst, ref SIZE psize,
         IntPtr hdcSrc, ref POINT pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
@@ -70,18 +62,6 @@ internal static class Native
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct WINDOWPOS
-    {
-        public IntPtr hwnd;
-        public IntPtr hwndInsertAfter;
-        public int x;
-        public int y;
-        public int cx;
-        public int cy;
-        public uint flags;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
