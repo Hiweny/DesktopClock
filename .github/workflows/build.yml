@@ -22,28 +22,65 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publish (self-contained single file)
+      - name: Publish single-file exe
         run: >
           dotnet publish src/DesktopClock/DesktopClock.csproj
           -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:DebugType=none
-          -o out
+          -o out/single
 
-      - name: Show output
-        run: Get-ChildItem -Recurse out | Select-Object FullName, Length
+      - name: Publish folder build (no self-extract, antivirus friendly)
+        run: >
+          dotnet publish src/DesktopClock/DesktopClock.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=false
+          -p:DebugType=none
+          -o out/folder
+
+      - name: Zip folder build
+        shell: pwsh
+        run: Compress-Archive -Path out/folder/* -DestinationPath out/DesktopClock-folder.zip -Force
+
+      - name: List outputs
+        shell: pwsh
+        run: |
+          Get-ChildItem out -Recurse -File | Select-Object FullName,@{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+
+      - name: Smoke test (really launch the exe)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:LOCALAPPDATA "DesktopClock\DesktopClock.log"
+          if (Test-Path $log) { Remove-Item $log -Force }
+          $exe = (Resolve-Path "out/single/DesktopClock.exe").Path
+          Write-Host "launch: $exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) {
+            Write-Host "::error::EXITED early, code=$($p.ExitCode)"
+            if (Test-Path $log) { Write-Host "---- LOG ----"; Get-Content $log }
+            exit 1
+          }
+          Write-Host "OK: process is alive, pid=$($p.Id)"
+          if (Test-Path $log) { Write-Host "---- LOG ----"; Get-Content $log } else { Write-Host "(no log file)" }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "smoke test passed"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: DesktopClock
-          path: out/DesktopClock.exe
+          path: |
+            out/single/DesktopClock.exe
+            out/DesktopClock-folder.zip
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: DesktopClock ${{ github.ref_name }}
-          files: out/DesktopClock.exe
+          files: |
+            out/single/DesktopClock.exe
+            out/DesktopClock-folder.zip
           generate_release_notes: true
