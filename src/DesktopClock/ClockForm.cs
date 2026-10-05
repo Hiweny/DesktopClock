@@ -144,12 +144,9 @@ public sealed class ClockForm : Form
 
         try
         {
-            if (!Autostart.IsEnabled())
-            {
-                Autostart.SetEnabled(true);
-                SyncAuto();
-                Log.Info("autostart enabled");
-            }
+            // 每次启动都校正自启注册表，确保指向当前 exe（换过位置也不会失效）
+            Autostart.EnsureRegistered();
+            SyncAuto();
         }
         catch (Exception ex) { Log.Error("autostart failed", ex); }
 
@@ -223,6 +220,9 @@ public sealed class ClockForm : Form
         auto.Click += (_, _) => { Autostart.SetEnabled(auto.Checked); SyncAuto(); };
         _autoItems.Add(auto);
         m.Items.Add(auto);
+
+        // 每次弹出菜单都刷新勾选状态，保证与实际一致
+        m.Opening += (_, _) => { SyncAuto(); SyncIntervals(); SyncToggleText(); };
 
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(new ToolStripMenuItem("退出", null, (_, _) => ExitApp()));
