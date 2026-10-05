@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path out/folder/* -DestinationPath out/DesktopClock-folder.zip -Force
 
-      - name: Smoke test (launch + show-desktop restore)
+      - name: Smoke test (launch + show-desktop restore + z-order lock)
         shell: pwsh
         run: |
           Add-Type @"
@@ -52,7 +52,8 @@ jobs:
           public static class W {
             [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
             [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
-            [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+            [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
           }
           "@
 
@@ -72,29 +73,32 @@ jobs:
 
           $m = Select-String -Path $log -Pattern 'hwnd = (\d+)' | Select-Object -Last 1
           if (-not $m) {
-            Write-Host "::error::hwnd not found in log"
-            Get-Content $log
-            Stop-Process -Id $p.Id -Force
-            exit 1
+            Write-Host "::error::hwnd not found in log"; Get-Content $log; Stop-Process -Id $p.Id -Force; exit 1
           }
           $h = [IntPtr][int64]$m.Matches[0].Groups[1].Value
-          Write-Host "hwnd from log = $h"
+          Write-Host "hwnd = $h"
 
-          Write-Host "simulating Win+D / Show Desktop  ->  SW_MINIMIZE"
+          Write-Host "T1: simulating Win+D / Show Desktop (SW_MINIMIZE)..."
           [void][W]::ShowWindow($h, 6)
           Start-Sleep -Seconds 3
           $iconic = [W]::IsIconic($h)
-          Write-Host "IsIconic after Show Desktop = $iconic"
+          Write-Host "T1 IsIconic after Show Desktop = $iconic"
+
+          Write-Host "T2: trying to force the clock to the top (HWND_TOP)..."
+          [void][W]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, 0, 0, 0x0003) # HWND_TOP, NOSIZE|NOMOVE
+          Start-Sleep -Seconds 2
+          $above = [W]::GetWindow($h, 3) # GW_HWNDPREV
+          Write-Host "T2 window above clock = $above (0 means clock jumped to top)"
 
           Write-Host "---- LOG ----"
           Get-Content $log
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 
-          if ($iconic) {
-            Write-Host "::error::clock did NOT come back after Show Desktop"
-            exit 1
-          }
-          Write-Host "smoke test passed (clock survives Show Desktop)"
+          $fail = $false
+          if ($iconic) { Write-Host "::error::T1 clock did NOT come back after Show Desktop"; $fail = $true }
+          if ($above -eq [IntPtr]::Zero) { Write-Host "::error::T2 z-order lock failed: clock jumped to top"; $fail = $true }
+          if ($fail) { exit 1 }
+          Write-Host "smoke test passed"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
