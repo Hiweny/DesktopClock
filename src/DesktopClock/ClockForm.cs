@@ -82,7 +82,7 @@ public sealed class ClockForm : Form
 
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
         Size = new Size(_w, _h);
-        Location = CenterIn(screen);
+        Location = DefaultLocation(screen);
 
         BuildFonts();
 
@@ -163,14 +163,21 @@ public sealed class ClockForm : Form
         base.OnFormClosed(e);
     }
 
-    private Point CenterIn(Rectangle screen)
-        => new(screen.X + Math.Max(0, (screen.Width - _w) / 2),
-               screen.Y + Math.Max(0, (screen.Height - _h) / 2));
+    // 默认位置：水平居中，竖直方向"中间偏上"（时间文字中心约在屏幕高度 1/4 处）
+    private Point DefaultLocation(Rectangle screen)
+    {
+        int x = screen.X + Math.Max(0, (screen.Width - _w) / 2);
+        int y = screen.Y + (int)Math.Round(screen.Height * 0.18);
+        int maxY = screen.Y + Math.Max(0, screen.Height - _h);
+        if (y > maxY) y = maxY;
+        if (y < screen.Y) y = screen.Y;
+        return new Point(x, y);
+    }
 
     private void Recenter()
     {
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-        Location = CenterIn(screen);
+        Location = DefaultLocation(screen);
         SendToBottom();
     }
 
@@ -196,7 +203,7 @@ public sealed class ClockForm : Form
         m.Items.Add(toggle);
 
         m.Items.Add(new ToolStripMenuItem("换一句诗词", null, (_, _) => RotatePoem(true)));
-        m.Items.Add(new ToolStripMenuItem("回到屏幕中央", null, (_, _) => { Recenter(); RenderNow(); }));
+        m.Items.Add(new ToolStripMenuItem("回到默认位置", null, (_, _) => { Recenter(); RenderNow(); }));
 
         var interval = new ToolStripMenuItem("诗词轮换间隔");
         foreach (var pair in new[] { ("30 秒", 30), ("1 分钟", 60), ("5 分钟", 300), ("10 分钟", 600) })
@@ -232,7 +239,11 @@ public sealed class ClockForm : Form
     private void SyncAuto()
     {
         bool v = Autostart.IsEnabled();
-        foreach (var it in _autoItems) it.Checked = v;
+        foreach (var it in _autoItems)
+        {
+            it.Checked = v;
+            it.Text = v ? "开机自启动：已开启（点击关闭）" : "开机自启动：已关闭（点击开启）";
+        }
     }
 
     private void SyncIntervals()
