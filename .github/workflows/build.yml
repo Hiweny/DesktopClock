@@ -43,29 +43,55 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path out/folder/* -DestinationPath out/DesktopClock-folder.zip -Force
 
-      - name: List outputs
+      - name: Smoke test (launch + show-desktop restore)
         shell: pwsh
         run: |
-          Get-ChildItem out -Recurse -File | Select-Object FullName,@{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class W {
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+            [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+          }
+          "@
 
-      - name: Smoke test (really launch the exe)
-        shell: pwsh
-        run: |
           $log = Join-Path $env:LOCALAPPDATA "DesktopClock\DesktopClock.log"
           if (Test-Path $log) { Remove-Item $log -Force }
           $exe = (Resolve-Path "out/single/DesktopClock.exe").Path
           Write-Host "launch: $exe"
           $p = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 15
+          Start-Sleep -Seconds 12
+
           if ($p.HasExited) {
             Write-Host "::error::EXITED early, code=$($p.ExitCode)"
-            if (Test-Path $log) { Write-Host "---- LOG ----"; Get-Content $log }
+            if (Test-Path $log) { Get-Content $log }
             exit 1
           }
-          Write-Host "OK: process is alive, pid=$($p.Id)"
-          if (Test-Path $log) { Write-Host "---- LOG ----"; Get-Content $log } else { Write-Host "(no log file)" }
+
+          $h = [W]::FindWindow($null, "DesktopClock")
+          Write-Host "window handle = $h"
+          if ($h -eq [IntPtr]::Zero) {
+            Write-Host "::error::window not found by title"
+            if (Test-Path $log) { Get-Content $log }
+            Stop-Process -Id $p.Id -Force
+            exit 1
+          }
+
+          Write-Host "simulating Win+D / Show Desktop (SW_MINIMIZE)..."
+          [void][W]::ShowWindow($h, 6)
+          Start-Sleep -Seconds 3
+          $iconic = [W]::IsIconic($h)
+          Write-Host "IsIconic after show-desktop = $iconic"
+
+          if (Test-Path $log) { Write-Host "---- LOG ----"; Get-Content $log }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          Write-Host "smoke test passed"
+
+          if ($iconic) {
+            Write-Host "::error::clock did NOT come back after Show Desktop"
+            exit 1
+          }
+          Write-Host "smoke test passed (clock survives Show Desktop)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
