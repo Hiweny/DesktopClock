@@ -39,9 +39,11 @@ jobs:
           -p:DebugType=none
           -o out/folder
 
-      - name: Zip folder build
+      - name: Zip builds
         shell: pwsh
-        run: Compress-Archive -Path out/folder/* -DestinationPath out/DesktopClock-folder.zip -Force
+        run: |
+          Compress-Archive -Path out/folder/* -DestinationPath out/DesktopClock-folder.zip -Force
+          Compress-Archive -Path out/single/DesktopClock.exe -DestinationPath out/DesktopClock-exe.zip -Force
 
       - name: Smoke test (launch + autostart registry)
         shell: pwsh
@@ -82,6 +84,7 @@ jobs:
           name: DesktopClock
           path: |
             out/single/DesktopClock.exe
+            out/DesktopClock-exe.zip
             out/DesktopClock-folder.zip
 
       - name: Publish release
@@ -91,5 +94,6 @@ jobs:
           name: DesktopClock ${{ github.ref_name }}
           files: |
             out/single/DesktopClock.exe
+            out/DesktopClock-exe.zip
             out/DesktopClock-folder.zip
           generate_release_notes: true
